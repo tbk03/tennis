@@ -1,0 +1,192 @@
+---
+title: "Age Profile"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(glue)
+library(ggdist)
+
+theme_set(theme_light())
+```
+
+```{r}
+file_folder <- "../../tennis_atp/"
+
+
+get_wimbledon_res <- function(year, round_of_int){
+  
+  # form file location string based on year
+  file_name <- glue("atp_matches_{year}.csv")
+  file_location <- str_c(file_folder, file_name)
+  
+  # read in data from csv
+  atp_res_year <- read_csv(file_location, 
+                           col_types = cols()) %>%  # this line suppresses output
+                                                    # when guessing column types
+    janitor::clean_names()
+  
+  results <- atp_res_year %>% 
+    
+    # focus on entrants (i.e those who played in the first round)
+    filter(tourney_name == "Wimbledon") %>% 
+    
+    # add in the year of the tournament
+    mutate(year = year, .before = tourney_id)
+  
+  return(results)
+}
+
+# look at all years from 1980 until the most recent championship
+years <- c(1980:2019)
+wimb_ms_res <- map_dfr(years, ~get_wimbledon_res(.x))
+wimb_ms_res
+
+
+```
+
+```{r}
+wimb_ms_res_simp <- wimb_ms_res %>% 
+  
+  # detailed match stats (e.g. first serve percentage)
+  select(-c(minutes:l_bp_faced))
+
+# losers
+losers <- wimb_ms_res_simp %>% 
+  
+  # drop columns containing basic match stats of the winner
+  select(-c(starts_with("winner"))) %>%
+  
+  # simplify column naming to enable row binding below
+  rename_with(.fn = ~str_replace( .x, "loser_", ""), 
+              .cols = starts_with("loser")) %>% 
+  rename(player_id = id) %>% 
+  mutate(result = "loser", .after = name)
+
+# winners
+winners <- wimb_ms_res_simp %>% 
+  
+  # drop columns containing basic match stats of the loser
+  select(-c(starts_with("loser"))) %>% 
+  
+  # simplify column naming to enable row binding below
+  rename_with(.fn = ~str_replace( .x, "winner_", ""), 
+              .cols = starts_with("winner")) %>% 
+  rename(player_id = id) %>% 
+  mutate(result = "winner", .after = name)
+
+# put winner and loser data back together
+wimb_ms_res_tidy <- winners %>% 
+  bind_rows(losers) %>% 
+  arrange(tourney_id, match_num)
+  
+```
+
+
+```{r}
+# focus on 1990's onwards and the round of 16 (i.e. the second wk)
+wimb_ms_res_R16 <- wimb_ms_res_tidy %>% 
+  
+  filter(round == "R16") %>% 
+  
+  group_by(name) %>% 
+  mutate(appearance_num = as.numeric(1:n())) %>% 
+  ungroup() %>% 
+  
+  mutate(appearance_num = if_else(appearance_num > 10, 10, appearance_num)) %>% 
+  
+  filter(year >= 2003)
+
+# get average ages for each year
+annual_averages <- wimb_ms_res_R16 %>% 
+  group_by(year) %>% 
+  summarise(age = mean(age))
+
+wimb_ms_res_R16 %>% 
+  ggplot(aes(factor(year), floor(age))) +
+  ggbeeswarm::geom_beeswarm(size = 2, alpha = 0.5, mapping = aes(colour = appearance_num)) +
+  geom_line(data = annual_averages, aes(group = 1), size = 2) +
+  #geom_point() +
+  #geom_line(aes(group = name)) +
+  scale_colour_gradient(low = "grey95", high = "black") +
+  
+  theme_minimal()
+```
+
+```{r}
+winner_ages <- wimb_ms_res_tidy
+  
+r_128 <- wimb_ms_res_tidy %>% 
+  filter(round == "R128") %>% 
+  select(year, age)
+
+
+ggplot(data = r_128,
+       mapping = aes(y = year, x = age)) +
+  ggdist::stat_eye()
+  #ggdist::stat_dist_gradientinterval(mapping = aes(slab_alpha = stat(~pmax(abs(1 - 2*cdf), 0.95))))
+
+
+wimb_ms_res_tidy %>% 
+  group_by(year, round) %>% 
+  summarise(age = mean(age, na.rm = TRUE)) %>% 
+  
+  #filter(round %in% c("F", "R128")) %>% 
+  
+  ggplot(aes(year, age, colour = round)) +
+  geom_line() +
+  facet_wrap(~round)
+```
+
+```{r}
+# set.seed(1234)
+# df = tribble(
+#     ~group, ~subgroup, ~value,
+#     "a",          "h", rnorm(1000, mean = 5),
+#     "b",          "h", rnorm(1000, mean = 7, sd = 1.5),
+#     "c",          "h", rnorm(1000, mean = 8),
+#     "c",          "i", rnorm(1000, mean = 9),
+#     "c",          "j", rnorm(1000, mean = 7)
+#   ) %>%
+#   unnest(value)
+# 
+# df %>%
+#   ggplot(aes(y = group, x = value)) +
+#   ggdist::stat_eye()
+# 
+# df %>%
+#   ggplot(aes(x = group, y = value, fill = subgroup)) +
+#   stat_gradientinterval(position = "dodge") +
+#   labs(title = "stat_gradientinterval(position = 'dodge')")
+
+player_of_int = c("Roger Federer", "Andy Murray", "Novak Djokovic", "Pete Sampras", "Rafael Nadal")
+
+finalists <- wimb_ms_res_tidy %>% 
+  mutate(name_simp = if_else(name %in% player_of_int, name, "Other")) %>% 
+  
+  group_by(name) %>% 
+  mutate(final_appearance = 1:n())%>% 
+  
+  filter(round == "F" & year >= 1990)
+
+r_128 %>% 
+  na.omit() %>% 
+  filter(year >= 1990) %>% 
+  ggplot(aes(x = factor(year), y = age)) +
+  #ggdist::stat_eye()
+  ggdist::stat_gradientinterval(fill = "grey60", 
+                                point_colour = NA, .width = 0 # remove line representation
+                                                              # of distribution
+                                ) +
+  geom_point(data = finalists,
+             mapping = aes(fill = name_simp),
+             size = 7, shape = 22) +
+  
+  scale_fill_brewer(type = "qual", palette = "Set3") +
+  
+  theme(panel.grid.major.x = element_blank())
+  
+```
+

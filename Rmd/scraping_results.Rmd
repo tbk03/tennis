@@ -1,0 +1,338 @@
+---
+title: "Scraping Results"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(rvest)
+```
+
+
+```{r}
+ms_res_hmtl <- read_html("https://www.bbc.co.uk/sport/tennis/results/wimbledon/mens-singles") 
+
+#****************************************************************
+# Match result tables
+#****************************************************************
+
+# get match result tables from html
+ms_res <- ms_res_hmtl %>% 
+  html_elements(".sp-c-tennis-head-to-head") 
+
+# convert match result tables to dataframes
+ms_res_tables <- html_table(ms_res)
+
+# set up function for cleaning each match result table
+clean_match_res_table <- function(df){
+  
+  clean_df <- df %>% 
+    
+    # rename variables for ease of reading
+    rename(player = Result, sets_won = S) %>% 
+    
+    # convert types where needed
+    mutate(
+      
+      # convert logical vars (where sets haven't been played) to numeric vars
+      across(.cols = where(is.logical), ~as.numeric(.x)),
+      
+      # convert sets won where there have been work overs
+      sets_won = as.numeric(sets_won)
+      ) %>% 
+    
+    # clean up columns where games and tiebreak scores have been merged
+    pivot_longer(cols = `1`:`5`, names_to = "set_num", values_to = "games_won") %>% 
+    mutate(games_won_str = as.character(games_won),
+           games_won_str = str_sub(games_won_str, 1, 1),
+           games_won = as.numeric(games_won_str)) %>% 
+    select(-games_won_str) %>% 
+    
+    mutate(winner = if_else(sets_won == 3, T, F),
+           .after = player) %>% 
+    
+    pivot_wider(names_from = set_num, values_from = games_won)
+  
+    clean_df
+    
+    return(clean_df)
+}
+
+# clean the individual match tables and put them together in to a single table
+ms_res_tables_clean <- map(ms_res_tables,clean_match_res_table) 
+ms_all_res <- bind_rows(ms_res_tables_clean)
+nrow(ms_all_res)
+
+#****************************************************************
+# Match result descriptions
+#****************************************************************
+
+# get match descriptions
+ms_matches_desc <- ms_res_hmtl %>% 
+  html_elements("h5")
+
+ms_matches_desc_text <- ms_matches_desc %>% 
+  html_text()
+
+length(ms_matches_desc_text)
+
+match_info <- ms_matches_desc_text %>% 
+  as_data_frame() %>% 
+  rename(match_desc = value) %>% 
+  
+  # create match ids
+  mutate(match_id = n():1) %>% 
+  
+  # duplicate each row so df rows correspond to the matches df
+  slice(rep(1:n(), each = 2))
+
+#****************************************************************
+# Walkovers and retirements
+#****************************************************************
+# get walkover and retirements from html
+ms_ret_wos_text <- ms_res_hmtl %>% 
+  html_elements(".sp-c-tennis-head-to-head__summary") %>% 
+  html_text()
+
+
+#****************************************************************
+# Combine scraped data
+#****************************************************************
+# add match ids and descriptions to players and scores
+ms_all_res <- match_info %>% 
+  bind_cols(ms_all_res)
+
+# Walkovers
+# find matches where both player are loser or result is NA
+ms_wo <- ms_all_res %>% 
+  filter(is.na(winner)) %>% 
+  select(match_id) %>% 
+  distinct(match_id)
+
+# Retirements
+# find matches where there is no winner (in the sense of someone having won 3 sets)
+ms_ret <- ms_all_res %>% 
+  group_by(match_id) %>% 
+  summarise(has_winner = sum(winner)) %>% 
+  filter(has_winner != 1) %>% 
+  select(match_id)
+
+# combine walkovers and retirements
+ms_wo_ret <- ms_wo %>% 
+  bind_rows(ms_ret)
+
+# separate out incomplete and complete matches
+ms_completed_matches <- ms_all_res %>% 
+  filter(!(match_id %in% ms_wo_ret$match_id))
+
+ms_not_completed_matches <- ms_all_res %>% 
+  filter(match_id %in% ms_wo_ret$match_id)
+
+# identify player who have won incomplete matches
+ms_ret_wos_winners <- ms_ret_wos_text %>% 
+  as_data_frame() %>% 
+  rename(match_text = value) %>% 
+  separate(match_text, into = c("winner", "loser"),
+                                sep = "\\(") %>% 
+  select(-loser) %>% 
+  separate(winner, into = c("fn", "winner"), sep = " ") %>% 
+  select(-fn)
+
+# ASSUMES THAT NO PLAYER GETS MORE THAN ONE WALKOVER/RETIRMENT VICTORY!!!
+# update winners of incomplete matches
+ms_not_completed_matches_updated <- ms_not_completed_matches %>% 
+  mutate(winner = player %in% ms_ret_wos_winners$winner)
+
+# put the complete and incomplete matches back together again
+ms_res_cleaned <- ms_completed_matches %>% 
+  bind_rows(ms_not_completed_matches_updated) %>% 
+  
+  # tidy up match description variable entries
+  separate(match_desc, into = c("comp", "round"), sep = " - ") %>% 
+  mutate(round = str_extract(round, "\\d+")) 
+
+```
+
+## A simpler more effective approach based on text-reader strings
+
+```{r}
+# get html from BBC tennis results site
+ms_res_hmtl <- read_html("https://www.bbc.co.uk/sport/tennis/results/wimbledon/mens-singles") 
+
+# get match descriptions
+ms_matches_desc <- ms_res_hmtl %>% 
+  html_elements("h5")
+
+ms_matches_desc_text <- ms_matches_desc %>% 
+  html_text()
+
+# get a string of text with all match details from accessibility info
+ms_res_results <- ms_res_hmtl %>% 
+  html_elements(".qa_event-summary-accessibilty") %>% 
+  html_text() %>% 
+  as_data_frame() %>% 
+  rename(match_string = value)
+ 
+  
+ms_res_results <- ms_res_results %>% 
+  
+  # add in match description column
+  bind_cols(as_data_frame(ms_matches_desc_text)) %>% 
+  rename(round_string = value) %>% 
+  
+  separate(match_string, into = c("winner", "loser"), sep = " beat ") %>% 
+  
+  # deal with winners (as simpler than losers)
+  separate(winner, into = c("winner_name", "winner_nat"), "\\(") %>% 
+  mutate(winner_nat = str_replace(winner_nat, "\\)", ""),
+         winner_nat = str_to_upper(winner_nat)) %>% 
+  
+  # deal with loser and scores
+  mutate(loser_nat = str_extract(loser, "\\(\\w+\\)"),
+         loser_nat = str_to_upper(str_extract(loser_nat, "\\w+"))) %>% 
+  
+  separate(loser, into = c("loser_name", "score"), sep = "\\(\\w+\\)") %>% 
+  relocate(loser_nat, .after = loser_name) %>% 
+  
+  # tidy up match description variable entries
+  separate(round_string, into = c("comp", "round"), sep = " - ") %>% 
+  mutate(round = str_extract(round, "\\d+")) %>% 
+  
+  # add match ids
+  mutate(match_id = n():1) %>% 
+  {.}
+
+```
+
+```{r}
+losers <- select(ms_res_results, -starts_with("winner")) %>% 
+  rename(player = loser_name, nat = loser_nat) %>% 
+  mutate(result = "loser", .after = nat)
+
+winners <- select(ms_res_results, -starts_with("loser")) %>% 
+  rename(player = winner_name, nat = winner_nat) %>% 
+  mutate(result = "winner", .after = nat)
+
+msa_res_tidy <- winners %>% 
+  bind_rows(losers) %>% 
+  arrange(desc(match_id))
+
+msa_res_tidy
+```
+```{r}
+library(lubridate)
+
+# set to read in files from tennis abstract datasets
+file_folder <- "../../tennis_atp/"
+file_name_players <- "atp_players.csv"
+file_name_cur_rankings <- "atp_rankings_current.csv"
+
+# read in player data
+atp_players <- read_csv(str_c(file_folder, file_name_players),
+                        col_names = c("id", "first_nm", "fam_nm", "handed", "dob", "nat"))
+
+# read in ranking data
+current_rankings <- read_csv(str_c(file_folder, file_name_cur_rankings),
+         col_names = c("date", "ranking", "id", "ranking_points")) %>% 
+  
+  # keep only the most recent rankings
+  mutate(date = ymd(date))  %>% 
+  filter(date == ymd("2021-06-28"))
+
+# combine player and ranking data
+player_rank <- current_rankings %>% 
+  left_join(atp_players) %>%
+  
+  # merge first and family names to match the format in scraped data
+  unite("player", first_nm, fam_nm, sep = " ") %>% 
+  select(player, nat, ranking, handed) %>% 
+  mutate(player = str_trim(player),
+         nat = str_trim(nat),
+         first_initial = str_extract(player, "\\w"),
+         surname = str_extract(player, "\\w+$"),
+         short_name = str_c(first_initial, surname, sep = " ")) %>% 
+  select(-first_initial, -surname)
+
+# create a short name for matching in the scraped dataset
+
+msa_res_tidy <- msa_res_tidy %>% 
+  mutate(player = str_trim(player),
+         nat = str_trim(nat),
+         first_initial = str_extract(player, "\\w"),
+         surname = str_extract(player, "\\w+$"),
+         short_name = str_c(first_initial, surname, sep = " ")) %>% 
+  select(-first_initial, -surname)
+
+# combine scraped results and Tennis Abstract player/ranking data
+ms_res_rank <- msa_res_tidy %>% 
+  left_join(player_rank, by = "short_name")
+
+
+
+```
+
+```{r}
+ms_res_rank %>% 
+  select(player.x, ranking) %>% 
+  distinct(player.x, ranking) %>% 
+  filter(is.na(ranking))
+```
+
+```{r}
+bbc_ta_lookup <- read_csv("../Data/bbc_TA_name_lookup.csv")
+
+ms_res_rank_messy <- ms_res_rank %>% 
+  
+  # rename 
+  rename(player_bbc = player.x,
+         nat_bbc = nat.x,
+         player_ta = player.y,
+         nat_ta = nat.y) %>%
+  
+  # add in corrected TA names where bbc names don't match TA names
+  left_join(bbc_ta_lookup, by = c("player_bbc" = "bbc_name")) %>% 
+  
+  # create a single TA name string
+  mutate(player_ta = case_when(
+    is.na(player_ta) ~ str_c(ta_first_name, ta_fam_name, sep = " "),
+    TRUE ~ player_ta)) %>% 
+  
+  # add back in the
+  left_join(player_rank, by = c("player_ta" = "player"))
+  
+  
+
+```
+```{r}
+
+# remove duplicate and unnessary variables
+ms_res_rank <- ms_res_rank_messy %>% 
+  select(player = player_ta,
+         nat,
+         ranking = ranking.y,
+         handed = handed.y,
+         result:match_id)
+
+ms_res_rank
+```
+
+```{r}
+rank_groups <- c(0,5,20, 50, 100, 200, Inf)
+
+ms_res_rank %>% 
+  mutate(rank_group = cut(ranking, rank_groups)) %>% 
+  
+  group_by(round, rank_group) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  
+  group_by(round) %>% 
+  mutate(prop_of_players = n / sum(n)) %>% 
+  
+  mutate(round = as.numeric(round)) %>% 
+  arrange(desc(round)) %>% 
+  
+  write_csv("../Data/progress_by_rank.csv")
+```
+

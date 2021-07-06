@@ -1,0 +1,315 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(glue)
+library(rvest)
+
+theme_set(theme_light())
+```
+
+```{r}
+file_folder <- "../../tennis_atp/"
+
+get_first_round_nationalities <- function(year){
+  
+  # form file location string based on year
+  file_name <- glue("atp_matches_{year}.csv")
+  file_location <- str_c(file_folder, file_name)
+  
+  # read in data from csv
+  atp_res_year <- read_csv(file_location, 
+                           col_types = cols()) %>%  # this line suppresses output
+                                                    # when guessing column types
+    janitor::clean_names()
+  
+  # identify the top n countries by number of entrants in the most recent tournament
+  # which is 2019
+  
+  first_round_nationalities <- atp_res_year %>% 
+    
+    # focus on entrants (i.e those who played in the first round)
+    filter(tourney_name == "Wimbledon",
+           round == "R128") %>% 
+    
+    # an only really interested in nationalities of entrants at the moment
+    select(winner_ioc, loser_ioc) %>% 
+    
+    # but they winners and losers nationalities are listed in separate columns, 
+    # so put them in the same column
+    pivot_longer(cols = winner_ioc:loser_ioc, names_to = "res", values_to = "country")  %>% 
+    
+    # add in the year
+    mutate(year = year, .before = country) %>% 
+    select(-res) # remove a variable that is no longer needed
+  
+  return(first_round_nationalities)
+}
+
+# look at all years from 1980 until the most recent championship
+years <- c(1980:2019)
+first_round_nat_ts <- map_dfr(years, ~get_first_round_nationalities(.x))
+first_round_nat_ts
+
+# top_n_countries <- 10
+# 
+# %>% 
+#   
+#   # look at the top 10 
+#   count(country) %>% 
+#   slice_max(n, n = top_n_countries) %>% 
+#   
+#   mutate(year = year, .before = country)
+
+```
+
+```{r}
+country_counts <- first_round_nat_ts %>% 
+  group_by(year) %>% 
+  count(country) %>% 
+  mutate(rank = min_rank(desc(n)))
+
+country_counts %>% 
+  filter(year >= 2000) %>% 
+  ggplot(aes(year, country)) +
+  geom_tile(aes(fill = n)) +
+  scale_fill_viridis_c(direction = -1)
+  
+```
+```{r}
+# reviewing the plot above to identify interesting countries
+countries_of_int <- c("USA", "GBR", "FRA", "AUS", "ESP", "ITA")
+
+
+# "SWE", "RUS", "RSA", "GER", , "ARG"
+# may be interesting 
+#c("SUI", "NED", "JPN", "CZE")
+
+# check for spelling mistakes in the countries of interest list
+countries_of_int %in% country_counts$country
+
+```
+```{r}
+country_counts_simp <- country_counts %>% 
+  mutate(country = case_when(
+    country %in% countries_of_int ~ country,
+    TRUE ~ "Other"
+  )) %>% 
+  group_by(year, country) %>% 
+  summarise(n = sum(n))
+```
+
+```{r}
+country_counts %>% 
+  group_by(year) %>% 
+  summarise(n = sum(n))
+
+
+country_counts %>% 
+  ggplot(aes(year, n,
+             colour = country)) +
+  geom_line() +
+  #ggstream::geom_stream(type = "ridge", bw = 1, true_range = "none", extra_span = 0.1) +
+  scale_colour_viridis_d()
+```
+
+## get this year's Wimbeldon draw
+
+```{r}
+# scrape html
+draw_2021 <- read_html("https://tennisabstract.com/current/2021WimbledonMenForecast.html")
+
+# get the table including the draw and forecasts
+draw_2021_df <- html_elements(draw_2021, "table")[4] %>% 
+  html_table() %>%
+  as.data.frame() %>% 
+  select(-X2,-X10, -X11)
+
+# use the first row as the column names
+colnames(draw_2021_df) <- draw_2021_df[1,] 
+
+# remove rows that don't contain data
+draw_2021_df_simp <- draw_2021_df %>% 
+  janitor::clean_names() %>% 
+  # remove rows that contain header info
+  slice(-1) %>% 
+  filter(player != "Player" & player != "")
+
+# split player names from nationalities
+draw_2021_df_clean <- draw_2021_df_simp %>% 
+  separate(player, 
+           into = c("player", "nationality"),
+           sep = " \\(")
+
+# split seed numbers from player names
+draw_2021_df_clean$seed <- str_extract(draw_2021_df_clean$player, "\\(\\d+\\)")  
+draw_2021_df_clean$player <- str_replace(draw_2021_df_clean$player, "\\(\\d+\\)", "")
+
+# tidy up data
+draw_2021_df_tidy <- draw_2021_df_clean %>% 
+  relocate(seed, .before = player) %>% 
+  mutate(seed = str_extract(seed, "\\d+"),
+         seed = as.numeric(seed),
+         nationality = str_replace(nationality, "\\)", "")) 
+
+draw_2021_df_tidy
+```
+
+```{r}
+country_counts_2021 <- draw_2021_df_tidy %>% 
+  count(nationality) %>% 
+  arrange(desc(n)) %>% 
+  mutate(year = 2021, .before = nationality) %>% 
+  mutate(rank = min_rank(desc(n))) %>% 
+  rename(country = nationality)
+
+```
+```{r}
+# add this years nationality counts to the historic data
+# and focus on 2000 - 2021
+country_counts_complete <- country_counts %>% 
+  bind_rows(country_counts_2021) %>% 
+  filter(year >= 2000) %>% 
+  select(-rank) %>% 
+  
+  # create an entry for each country each year
+  pivot_wider(names_from = country, values_from = n) %>% 
+  pivot_longer(cols = ARG:last_col(), 
+               names_to = "country", 
+               values_to = "n") %>% 
+  mutate(n = replace_na(n, 0))
+
+country_counts_2020 <- tibble(year = 2000,
+                              country = unique(country_counts_complete$country),
+                              n = NA) %>% 
+  mutate(n = as.numeric(n))
+
+# try to get three year moving averages to work
+country_counts_3_year_ave <- country_counts_complete %>%
+  bind_rows(country_counts_2020) %>% 
+  group_by(country) %>% 
+  mutate(three_year_ave = RcppRoll::roll_mean(n, n = 3, align = "left", fill = NA, na.rm = TRUE)) 
+```
+
+```{r}
+# with moving averages
+big_change_countries <- country_counts_3_year_ave %>% 
+  filter(year == 2000 | year == 2019) %>% 
+  na.omit() %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = year, values_from = three_year_ave
+) %>% 
+  mutate(change_in_entrants = `2019` - `2000`) %>% 
+  arrange(change_in_entrants)
+
+big_change_countries
+
+# with raw values
+big_change_countries <- country_counts_complete %>% 
+  filter(year == 2000 | year == 2021) %>% 
+  pivot_wider(names_from = year, values_from = n) %>% 
+  mutate(change_in_entrants = `2021` - `2000`) %>% 
+  arrange(change_in_entrants) %>% 
+  filter(change_in_entrants <= -3 | change_in_entrants >= 3)
+
+countries_of_int <- big_change_countries$country
+countries_of_int <- append(countries_of_int, "CAN")
+```
+
+```{r}
+countries_of_int_2 <- c("JPN", "SRB", "SWE", "CZE", "CAN") 
+
+country_counts_complete %>% 
+  filter(country %in% countries_of_int_2) %>% 
+  filter(year <= 2019) %>% 
+  
+  mutate(country = fct_relevel(country, "SWE", "CZE", "CAN", "JPN", "SRB")) %>% 
+  
+  ggplot(aes(x = year, y = n,
+             group = country)) +
+  ggstream::geom_stream(aes(fill = country), 
+                        bw = 0.8, 
+                        extra_span = 0.0
+                        1,
+                        true_range = "none")
+  #geom_area(aes(fill = country))
+
+  
+counts_out <- country_counts_complete %>% 
+  filter(country %in% countries_of_int_2)
+
+write_excel_csv(counts_out, "counts.xls")
+```
+
+```{r}
+
+get_fr_wimb_players <- function(year, nation){
+  
+  
+  file_name <- glue("atp_matches_{year}.csv")
+  file_location <- str_c(file_folder, file_name)
+  
+  # read in data from csv
+  atp_res_year <- read_csv(file_location, 
+                           col_types = cols()) %>%  # this line suppresses output
+    # when guessing column types
+    janitor::clean_names()
+  
+  # identify the top n countries by number of entrants in the most recent tournament
+  # which is 2019
+  
+  first_round_wimb <- atp_res_year %>% 
+    
+    # focus on entrants (i.e those who played in the first round)
+    filter(tourney_name == "Wimbledon",
+           round == "R128")
+  
+  # get first round winners of a given nationality
+  fr_winners <- first_round_wimb %>% 
+    filter(winner_ioc == nation) %>% 
+    select(name = winner_name, 
+           ioc = winner_ioc,
+           id = winner_id)
+  
+  # get first round loser of a given nationality
+  fr_losers <- first_round_wimb %>% 
+    filter(loser_ioc == nation) %>% 
+    select(name = loser_name, 
+           ioc = loser_ioc, 
+           id = loser_id)
+  
+  # collate list of all players
+  fr_players <- fr_winners %>% 
+    bind_rows(fr_losers)
+  
+  return(fr_players)
+}
+
+# get all the player names for countries of interest 
+players_of_int <- countries_of_int_2 %>% 
+  map_df(~get_fr_wimb_players(year = 2000, nation = .x))
+
+```
+
+```{r}
+wimbledon_2000_date <- 20000626
+
+# get ranking as the start of the tourney
+file_location <- str_c(file_folder, "atp_rankings_00s.csv")
+player_rankings <- read_csv(file_location) %>% 
+  filter(ranking_date == wimbledon_2000_date) %>% 
+  filter(player %in% players_of_int$id) %>% 
+  select(id = player, rank)
+
+players_of_int <- players_of_int %>% 
+  left_join(player_rankings) %>% 
+  mutate(player_rank = glue("{name} ({rank})")) %>% 
+  group_by(ioc) %>% 
+  arrange(rank, .by_group = TRUE)
+
+write_excel_csv(players_of_int, "players.xls")
+```
+
