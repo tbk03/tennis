@@ -1,0 +1,258 @@
+---
+title: "Goats"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(glue)
+
+theme_set(theme_light())
+sysfonts::font_add_google("Lato", "Lato")
+
+source("../R/tennis_functions.R")
+```
+
+```{r}
+
+file_folder <- "../../tennis_atp/"
+
+
+get_atp_res <- function(year){
+  
+  # form file location string based on year
+  file_name <- glue("atp_matches_{year}.csv")
+  file_location <- str_c(file_folder, file_name)
+  
+  # read in data from csv
+  atp_res_year <- read_csv(file_location, 
+                           col_types = cols()) %>%  # this line suppresses output
+    # when guessing column types
+    janitor::clean_names()
+  
+  return(atp_res_year)
+}
+
+# Federer's first pro match was in 1998
+years <- c(1998:2021)
+atp_res <- map_dfr(years, ~get_atp_res(.x))
+atp_res
+
+```
+```{r}
+
+tidy_atp_df <- function(atp_res_df){
+  
+  # tidy up data for match losers
+  losers <- atp_res_df %>% 
+    
+    # drop columns containing match stats of the winner
+    select(-c(starts_with("winner"), starts_with("w_"))) %>%
+    
+    # simplify column naming to enable row binding below
+    rename_with(.fn = ~str_replace( .x, "loser_", ""), 
+                .cols = starts_with("loser")) %>% 
+    rename_with(.fn = ~str_replace( .x, "l_", ""), 
+                .cols = starts_with("l_")) %>% 
+    
+    # rename for simplicity
+    rename(player_id = id) %>% 
+    
+    # add result column and match_id
+    mutate(result = "loser", 
+           match_id = 1:n(),
+           .after = name)
+  
+  
+  # tidy up data for match winners
+  winners <- atp_res_df %>% 
+    
+    # drop columns containing  match stats of the loser
+    select(-c(starts_with("loser"), starts_with("l_"))) %>% 
+    
+    # simplify column naming to enable row binding below
+    rename_with(.fn = ~str_replace( .x, "winner_", ""), 
+                .cols = starts_with("winner")) %>% 
+    rename_with(.fn = ~str_replace( .x, "w_", ""), 
+                .cols = starts_with("w_")) %>% 
+    
+    # rename for simplicity
+    rename(player_id = id) %>% 
+    
+    # add result column and match id
+    mutate(result = "winner", 
+           match_id = 1:n(),
+           .after = name)
+  
+  # put winner and loser data back together to give a tidy format
+  atp_res_tidy <- winners %>% 
+    bind_rows(losers) %>% 
+    arrange(tourney_id, match_num)
+  
+  # return the tidy dataframe
+  return(atp_res_tidy)
+}
+
+atp_98_21 <- tidy_atp_df(atp_res) %>% 
+  mutate(tourney_name = replace(tourney_name, tourney_name == "Us Open", "US Open"))
+  
+atp_98_21
+```
+
+```{r fig.width= 6.372, fig.asp=0.66, fig.out = 100}
+
+big_three <- c("Roger Federer", "Novak Djokovic", "Rafael Nadal")
+
+big_three_gs_res <- atp_98_21 %>% 
+  filter(name %in% big_three) %>% 
+  filter(tourney_level == "G") %>% 
+  mutate(age = floor(age),
+         winner = if_else(result == "winner", TRUE, FALSE))
+
+
+get_stat_by_age <- function(res_df, stat){
+  
+  res_df %>% 
+    group_by(name, age) %>% 
+    
+    summarise({{stat}} := sum({{stat}}, na.rm = TRUE)) %>% 
+    
+    ungroup() %>% 
+    group_by(name) %>% 
+    
+    mutate(culm = cumsum({{stat}})) %>% 
+    
+    arrange(age) 
+    
+}
+
+# number of matches won at grand slam tournaments
+big_three_gs_match_wins <- big_three_gs_res %>% 
+  get_stat_by_age(winner)
+
+# number of grand slams won
+big_three_gs_wins <- big_three_gs_res %>% 
+  filter(round == "F" & winner) %>% 
+  get_stat_by_age(winner)
+
+# age at which first grand slams were won
+first_gs_win <- big_three_gs_wins %>% 
+  group_by(name) %>% 
+  summarise(first_gs_win = min(age))
+
+# minutes on court
+big_three_gs_mins <- big_three_gs_res %>% 
+  get_stat_by_age(minutes)
+  
+big_three_gs_res %>% 
+  filter(is.na(minutes)) %>% 
+  distinct(tourney_id, tourney_name)
+
+# set colours
+
+colour_pallette <- c("#578ac7", "#cf75b4", "#f37f5a") 
+
+
+
+
+
+showtext::showtext_auto()
+
+ggplot(big_three_gs_match_wins, aes(x = age, y = culm, colour = name)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(data = first_gs_win, mapping = aes(xintercept = first_gs_win, colour = name)) +
+  
+  scale_colour_manual(values = colour_pallette) +
+  scale_x_continuous(breaks = seq(17,40, 1)) +
+  
+  explanatory_theme_2()
+
+ggsave("../images/big_three_gs_match_wins.svg")
+
+# ggplot(big_three_gs_mins, aes(x = age, y = culm, colour = name)) +
+#   geom_line() +
+#   geom_vline(data = first_gs_win, mapping = aes(xintercept = first_gs_win, colour = name)) +
+#   
+#   scale_x_continuous(breaks = seq(17,40, 1)) +
+#   explanatory_theme_2()
+
+ggplot(big_three_gs_wins, aes(x = age, y = culm, colour = name)) +
+  geom_line() +
+  geom_point() +
+  
+  scale_colour_manual(values = colour_pallette) +
+  scale_x_continuous(breaks = seq(17,40, 1)) +
+  
+  explanatory_theme_2() +
+  theme(rect = element_rect(fill = "transparent"))
+
+ggsave("../images/big_three_gs_wins.svg")
+
+showtext::showtext_auto(FALSE)
+```
+
+```{r}
+# check how much missing ranking data there is ...
+atp_98_21 %>% 
+  select(rank) %>% 
+  visdat::vis_miss()
+
+atp_98_21 %>% 
+  filter(is.na(rank))
+
+# prepare opponent info to join to the big three dataframe
+opponents <- atp_98_21 %>% 
+  select(match_id,
+         opponent = name,
+         opponent_rank = rank)
+
+gs_wins_by_opp_ranking <- big_three_gs_res %>% 
+  
+  # add in opponents
+  left_join(opponents) %>% 
+  filter(name != opponent) %>% # remove duplicates where opponent is the same as player of interest 
+  
+  # bin opponents in to ranking groups
+  mutate(opp_rank_group = cut(opponent_rank,
+                              breaks = c(0,10,30,50,Inf)),
+         opp_rank_group = replace_na(opp_rank_group, replace = "(50,Inf]"),
+         opp_rank_g_simp = case_when(
+           opp_rank_group == "(0,10]" ~ "1. Top 10",
+           opp_rank_group == "(10,30]" ~ "2. 11 - 30",
+           opp_rank_group == "(30,50]" ~ "3. 31 - 50",
+           TRUE ~ "4. Outside the top 50"
+           
+         )) %>%  
+  
+  # focus down on data of interest
+  select(tourney_id, tourney_name, tourney_date, name, result, starts_with("opp"), winner) %>% 
+  filter(winner) %>% # only consider matches won
+  
+  group_by(name, tourney_name, opp_rank_g_simp) %>% 
+  summarise(num_gs_wins = n()) %>% 
+  
+  # make sure there are entries for each player, tournament and ranking group
+  complete(name, tourney_name, opp_rank_g_simp, fill = list(num_gs_wins = 0))
+
+gs_wins_by_opp_ranking
+
+write_csv(filter(gs_wins_by_opp_ranking, name == "Novak Djokovic"), "../data_out/nd.csv")
+```
+
+```{r}
+big_three_gs_wins_opp <- gs_wins_by_opp_ranking %>% 
+  ungroup() %>% 
+  group_by(name, opp_rank_g_simp) %>% 
+  summarise(num_gs_wins = sum(num_gs_wins))
+
+write_csv(big_three_gs_wins_opp, "../data_out/bto.csv")
+
+big_three_gs_wins_tourney <- gs_wins_by_opp_ranking %>% 
+  ungroup() %>% 
+  group_by(name, tourney_name) %>% 
+  summarise(num_gs_wins = sum(num_gs_wins))
+
+write_csv(big_three_gs_wins_tourney, "../data_out/btt.csv")
+```
+

@@ -141,6 +141,67 @@ wimb_ms_res_tidy %>%
 ```
 
 ```{r}
+sysfonts::font_add_google("Lato", "Lato")
+
+explanatory_theme_2 <- function(){
+  
+  
+  grid_line_colour <- "grey"
+  text_colour <- "black"
+  background_colour <- "grey98"
+  
+  
+  ggplot2::theme_bw() %+replace%
+  
+  ggplot2::theme(
+    
+    # format text
+    text = ggplot2::element_text(family = "Lato", size = 12),
+    plot.title = ggplot2::element_text(hjust = 0,size = 16),
+    plot.subtitle = ggplot2::element_text(hjust = 0, size = 12),
+    plot.caption = ggplot2::element_text(size = 8, 
+                                         hjust = 0),
+    
+    # format legend
+    legend.position = "top",
+    legend.background = ggplot2::element_blank(),
+    legend.title = ggplot2::element_blank(),
+    legend.text = ggplot2::element_text(size = 10),
+    
+    # format axis
+    #axis.text = ggplot2::element_text(face = "bold"),
+    axis.title.x = ggplot2::element_text(),
+    axis.title.y = ggplot2::element_blank(),
+    axis.line.y = ggplot2::element_blank(),
+    axis.line.x = ggplot2::element_blank(),
+    # axis.line.x = ggplot2::element_line(colour = "black", size = 1),
+    #axis.ticks.x = ggplot2::element_line(colour = grid_line_colour, size = 1),
+    axis.ticks = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(margin=ggplot2::margin(t = 1, b = 10)),
+    
+    # format plot gridlines
+    panel.grid.minor = ggplot2::element_blank(),
+    panel.grid.major.x = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_line(colour = grid_line_colour),
+    
+    # format plot background
+    panel.background = ggplot2::element_blank(),
+    
+    # format overall background (i.e. background behind the entire figure
+    # including the plot, titles etc.)
+    plot.background = ggplot2::element_blank(),
+    
+    # facet labels background
+    strip.background = ggplot2::element_rect(fill=background_colour),
+    strip.text = ggplot2::element_text(colour = text_colour, face = "bold",
+                                       size = 12),
+    panel.border = ggplot2::element_blank()
+  )
+}
+```
+
+
+```{r fig.asp = 0.6, fig.width = 6.214, out.width = "100%"}
 # set.seed(1234)
 # df = tribble(
 #     ~group, ~subgroup, ~value,
@@ -161,6 +222,13 @@ wimb_ms_res_tidy %>%
 #   stat_gradientinterval(position = "dodge") +
 #   labs(title = "stat_gradientinterval(position = 'dodge')")
 
+# player_colours <- c("#4b2077", "#003f90", "#00508e", "#005a76", "#006153", "#006532")
+
+#player_colours <- c("#6500cc", "#0064ff", "#008bff", "#00a6db", "#00bc9d","#00cc65")
+player_colours <- c("#6500cc", "#0070ff", "#009af5", "#00b7ad", "#00cc65")
+
+
+
 player_of_int = c("Roger Federer", "Andy Murray", "Novak Djokovic", "Pete Sampras", "Rafael Nadal")
 
 finalists <- wimb_ms_res_tidy %>% 
@@ -171,22 +239,70 @@ finalists <- wimb_ms_res_tidy %>%
   
   filter(round == "F" & year >= 1990)
 
+
+top_players <- finalists %>% 
+  filter(name_simp != "Other")
+
+other_players <- finalists %>% 
+  filter(name_simp == "Other")
+
+showtext::showtext.auto()
+
 r_128 %>% 
   na.omit() %>% 
   filter(year >= 1990) %>% 
   ggplot(aes(x = factor(year), y = age)) +
   #ggdist::stat_eye()
-  ggdist::stat_gradientinterval(fill = "grey60", 
+  ggdist::stat_gradientinterval(fill = "grey65", # "#D1B4AD"
                                 point_colour = NA, .width = 0 # remove line representation
                                                               # of distribution
                                 ) +
-  geom_point(data = finalists,
+    geom_point(data = other_players,
+             fill = "white", alpha = 0.5, colour = "white",
+             size = 7, shape = 22) +
+  
+  geom_point(data = top_players,
              mapping = aes(fill = name_simp),
              size = 7, shape = 22) +
   
-  scale_fill_brewer(type = "qual", palette = "Set3") +
   
-  theme(panel.grid.major.x = element_blank())
+  #scale_fill_brewer(type = "qual", palette = "Set3") +
+  scale_fill_manual(values = player_colours) +
+  scale_x_discrete(breaks = seq(1990, 2020, 5)) +
   
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.y =  element_blank()) +
+  explanatory_theme_2() +
+  
+  theme(panel.grid.major.y = element_line(colour = "grey90"))
+
+showtext::showtext.auto(FALSE)
+
+ggsave("age_profile.svg")
+  
+```
+```{r fig.asp = 0.15, fig.width = 7.207, out.width = "100%"}
+
+round_order = c("R128", "R64", "R32", "R16", "QF", "SF", "F")
+
+wimb_ms_res_tidy %>% 
+  mutate(round = factor(round, levels = round_order)) %>% 
+  group_by(year, round) %>% 
+  filter(year >= 1990) %>% 
+  summarise(age = mean(age, na.rm = TRUE)) %>% 
+  
+  #filter(round %in% c("F", "R128")) %>% 
+  
+  ggplot(aes(year, age)) +
+  geom_vline(xintercept = 1993, colour = "#4393D0") +
+  geom_vline(xintercept = 2003, colour = "#45B762") +
+  geom_line() +
+  scale_x_continuous(breaks = NULL) +
+  facet_wrap(~round, ncol = 7) +
+  explanatory_theme_2() +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+
+ggsave("rounds.svg")
 ```
 
