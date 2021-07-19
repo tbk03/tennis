@@ -1,0 +1,164 @@
+---
+title: "Wimbeldon Prize Money"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(rvest)
+
+source("../R/tennis_functions.R")
+```
+## Scrape prize money data
+```{r}
+
+wimb_pm_hmtl <- read_html("https://www.perfect-tennis.com/prize-money/wimbledon/#Prize_Money_Breakdown_for_Wimbledon_2021") 
+
+
+#****************************************************************
+# Match result tables
+#****************************************************************
+
+# get prize money tables from html
+pm <- wimb_pm_hmtl %>% 
+  html_elements("table") 
+
+# convert prize money tables to dataframes
+pm_tables <- html_table(pm)
+
+tables_of_int <- pm_tables[-c(2:9)]
+
+```
+
+```{r}
+
+clean_prize_money_df <- function(df){
+  
+  year <- colnames(df)[1]
+  
+  df %>% 
+    rename(round = !!as.symbol(year)) %>% 
+    janitor::clean_names() %>% 
+    mutate(year = year, .before = round) %>% 
+    
+    select(year, round, prize_money = prize_money_gbp) %>% 
+    mutate(prize_money = parse_number(prize_money))
+  
+}
+
+all_singles_pm <- map_dfr(tables_of_int, clean_prize_money_df) %>% 
+  separate(year, c("year", "sex"), " ") %>% 
+  mutate(sex = replace_na(sex, "both"))
+
+pm_2021 <- all_singles_pm %>% 
+  filter(year == 2021)
+```
+
+```{r}
+source("../R/tennis_functions.R")
+
+# mens
+csv_loc <- "../../tennis_atp/"
+mens <- get_res(2021, csv_loc, "atp") %>% 
+  tidy_tennis_df("atp")
+
+# womens
+csv_loc <- csv_loc <- "../../tennis_wta/"
+womens <- get_res(2021, csv_loc, "wta") %>% 
+  tidy_tennis_df("wta")
+
+wimb_2021_res <- mens %>% 
+  bind_rows(womens) %>% 
+  filter(tourney_name == "Wimbledon")
+```
+
+
+```{r}
+wimb_2021_res %>% 
+  distinct(round)
+
+pm_2021 %>% 
+  distinct(round)
+
+# clean up round names for prize money ahead of joining with result data
+pm_2021 <- pm_2021 %>% 
+  mutate(round = case_when(
+    round == "Round 1" ~ "R128",
+    round == "Round 2" ~ "R64",
+    round == "Round 3" ~ "R32",
+    round == "Round 4" ~ "R16",
+    round == "Quarterfinal" ~ "QF",
+    round == "Semifinal" ~ "SF",
+    round == "Runner-up" ~ "F",
+    TRUE ~ round
+  ))
+```
+```{r}
+# add prize money to results for the 127 player in each draw
+# that didn't win the title
+wimb_2021_res_losers <- wimb_2021_res %>% 
+  filter(result == "loser") %>% 
+  left_join(select(pm_2021, -sex))
+
+# add prize money for the two players that won the title
+wimb_2021_res_winners <- wimb_2021_res %>% 
+  filter(result == "winner" & round == "F") %>% 
+  mutate(round = "Winner") %>% 
+  left_join(select(pm_2021, -sex))
+
+# add title winner's and all other players data back together
+wimb_2021_res_pm <- wimb_2021_res_losers %>% 
+  bind_rows(wimb_2021_res_winners)
+  
+```
+```{r}
+pm_by_rank <- wimb_2021_res_pm %>% 
+  mutate(ranking_group = cut(rank,
+                              breaks = c(0,10,30,50,100,Inf))) %>% 
+  group_by(tour,ranking_group) %>% 
+  summarise(total_prize_money = sum(prize_money)) %>% 
+  mutate(total_prize_money = if_else(tour == "wta",
+                                     -1 * total_prize_money,
+                                     total_prize_money))
+```
+
+```{r}
+ggplot(pm_by_rank, aes(x = total_prize_money, y = ranking_group, fill = tour)) +
+  geom_col()
+```
+
+```{r}
+pm_by_rank %>% 
+  group_by(tour) %>% 
+  mutate(culm_pm = cumsum(total_prize_money)) %>% 
+  
+  ggplot(aes(x = culm_pm, y = ranking_group, fill = tour)) +
+  geom_col()
+```
+
+```{r}
+wimb_2021_res_pm %>% 
+  
+  mutate(prize_money = if_else(tour == "wta",
+                               -1 * prize_money,
+                               prize_money)) %>% 
+  arrange(tour,rank) %>% 
+  
+  group_by(tour) %>% 
+  mutate(culm_pm = cumsum(prize_money)) %>% 
+  select(rank, tour, prize_money, culm_pm) %>% 
+  # 
+  # mutate(ranking_group = cut(rank,
+  #                             breaks = c(seq(0,200, 1),Inf))) %>%
+  
+  ggplot(aes(y = culm_pm, x = rank, fill = tour)) +
+  geom_col() +
+  
+  xlim(c(0,200)) +
+  
+  coord_flip() +
+  
+  theme_minimal()
+```
+
